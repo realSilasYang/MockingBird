@@ -3,6 +3,7 @@ from encoder import inference as encoder
 from synthesizer.inference import Synthesizer
 from vocoder.wavernn import inference as rnn_vocoder
 from vocoder.hifigan import inference as gan_vocoder
+from vocoder.fregan import inference as fgan_vocoder
 from pathlib import Path
 from time import perf_counter as timer
 from toolbox.utterance import Utterance
@@ -11,6 +12,11 @@ import traceback
 import sys
 import torch
 import re
+from audioread.exceptions import NoBackendError
+from specdeno.enhance_speach import enhance
+import os
+from synthesizer.hparams import hparams
+import soundfile as sf
 
 # 默认使用wavernn
 vocoder = rnn_vocoder
@@ -117,11 +123,14 @@ class Toolbox:
         self.ui.stop_button.clicked.connect(self.ui.stop)
         self.ui.record_button.clicked.connect(self.record)
 
+        #添加source_mfcc分析槽
+        func = lambda: self.ui.plot_mfcc(self.ui.selected_utterance.wav, Synthesizer.sample_rate)
+        self.ui.play_button.clicked.connect(func)
+
         # Source Utterance selection
         if self.vc_mode:
             func = lambda: self.load_soruce_button(self.ui.selected_utterance)
             self.ui.load_soruce_button.clicked.connect(func)
-
         #Audio
         self.ui.setup_audio_devices(Synthesizer.sample_rate)
 
@@ -132,10 +141,15 @@ class Toolbox:
         self.ui.export_wav_button.clicked.connect(func)
         self.ui.waves_cb.currentIndexChanged.connect(self.set_current_wav)
 
+
+
         # Generation
         self.ui.vocode_button.clicked.connect(self.vocode)
         self.ui.random_seed_checkbox.clicked.connect(self.update_seed_textbox)
 
+        # 添加result_mfcc分析槽,该槽要在语音合成之后
+        func = lambda: self.ui.plot_mfcc1(self.current_wav, Synthesizer.sample_rate)
+        self.ui.generate_button.clicked.connect(func)
         if self.vc_mode:
             func = lambda: self.convert() or self.vocode()
             self.ui.convert_button.clicked.connect(func)
@@ -185,7 +199,9 @@ class Toolbox:
 
         # Get the wav from the disk. We take the wav with the vocoder/synthesizer format for
         # playback, so as to have a fair comparison with the generated audio
-        wav = Synthesizer.load_preprocess_wav(fpath)
+        #wav = Synthesizer.load_preprocess_wav(fpath)
+        wav = enhance(fpath)
+
         self.ui.log("Loaded %s" % name)
 
         self.add_real_utterance(wav, name, speaker_name)
@@ -195,6 +211,9 @@ class Toolbox:
 
     def record(self):
         wav = self.ui.record_one(encoder.sampling_rate, 5)
+        sf.write('output1.wav', wav, hparams.sample_rate)  # 先将变量wav写为文件的形式
+        wav = enhance('output1.wav')
+        os.remove("./output1.wav")
         if wav is None:
             return 
         self.ui.play(wav, encoder.sampling_rate)
@@ -306,7 +325,10 @@ class Toolbox:
 
         # Trim excessive silences
         if self.ui.trim_silences_checkbox.isChecked():
-            wav = encoder.preprocess_wav(wav)
+            #wav = encoder.preprocess_wav(wav)
+            sf.write('output.wav', wav, hparams.sample_rate)      #先将变量wav写为文件的形式
+            wav = enhance('output.wav')
+            os.remove("./output.wav")
 
         # Play it
         wav = wav / np.abs(wav).max() * 0.97
@@ -445,6 +467,14 @@ class Toolbox:
         # Case of Griffin-lim
         if model_fpath is None:
             return 
+
+        # Select vocoder based on model name
+        if model_fpath.name[0] == "g":
+            vocoder = gan_vocoder
+            self.ui.log("set hifigan as vocoder")
+        elif model_fpath.name[0] == "m":
+            vocoder = fgan_vocoder
+            self.ui.log("set fregan as vocoder")
         # Sekect vocoder based on model name
         model_config_fpath = None
         if model_fpath.name[0] == "g":
@@ -468,4 +498,6 @@ class Toolbox:
         self.ui.set_loading(0)
 
     def update_seed_textbox(self):
-       self.ui.update_seed_textbox() 
+       self.ui.update_seed_textbox()
+
+
